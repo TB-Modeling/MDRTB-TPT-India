@@ -1,0 +1,5 @@
+<<Transnmission>>: The transmision event is combined for both strains since a person can be only infectious for one strain at a time
+
+<<Infectiousness>>: updated at the time of contact (Population::modelContacts)
+
+<<Immunity>>: we assume that both disease imly immunity toward reinfection with the same or the other disease. 0 by default, XX at the latency, 1 at the active disease and treament states.

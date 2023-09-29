@@ -1,0 +1,24 @@
+# The conanfile defines project dependencies ('requires') and the build system
+# used for the project ('generators'), e.g. 'make', 'cmake', etc.
+#
+# Documentation
+# - Official docs: https://docs.conan.io/en/latest/reference/conanfile_txt.html
+# - TB-Modeling docs: https://github.com/TB-Modeling/Modeling-Projects/wiki/Project-setup-&-installation
+#
+# [requires]
+# These are dependencies, using the format:
+# dependency_name/version@organization/channel
+#
+# [generators]
+# The build system used to create the project from source.
+#
+# TODO list
+#  - Add temporary requirement GSL? (gnu scientific library; not MS GSL")
+#
+[requires]
+boost_iostreams/1.69.0@bincrafters/stable
+boost_serialization/1.69.0@bincrafters/stable
+Catch2/2.10.2@catchorg/stable
+
+[generators]
+make

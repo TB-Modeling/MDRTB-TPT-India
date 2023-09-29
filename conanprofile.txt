@@ -1,0 +1,42 @@
+# The conanprofile is a file used for compilation specifications.
+#
+# Documentation
+# - Official docs: https://docs.conan.io/en/latest/reference/profiles.html
+# - TB-Modeling docs: https://github.com/TB-Modeling/Modeling-Projects/wiki/Project-setup-&-installation
+#
+# [settings]
+# Here you can define the operating system and computer architecture for the
+# system you are using to compile, as well as the target computer architecture
+# / OS that you are building to. You can define the name of the compiler, as
+# well as the version of C++ used by the project (e.g. 11, 14, 17, etc), and
+# the compiler version.
+#
+# [build_requires]
+# This is for defining additional system requirements that are needed in order
+# to perform a successful build. These are things that may or may not already
+# be installed globally on your system. If they are not, then you can define
+# what they are in the same format as the `[requires]` section of the `
+# conanfile, and they will be downloaded and installed in a local directory
+# specific to the project and used in the build.
+#
+# [env]
+# This is for any environmental variables that may need to be defined. In most
+# cases, Conan will just use your existing environmental variables, but you may
+# wish to override them here, or define them here for clarity.
+
+[settings]
+os=Macos
+os_build=Macos
+arch=x86_64
+arch_build=x86_64
+build_type=Release
+compiler=gcc
+compiler.libcxx=libstdc++11
+compiler.version=6.5
+[options]
+[build_requires]
+cmake_installer/3.15.5@conan/stable
+[env]
+CXX=g++-6
+CC=gcc-6
+CMAKE_C_COMPILER=gcc-6

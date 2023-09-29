@@ -1,0 +1,328 @@
+
+setClass('adaptive.blockwise.metropolis.control',
+         contains='mcmcsimcontrol',
+         representation=list(n.blocks='integer',
+                             var.blocks='list',
+                             use.adaptive.scaling='logical',
+                             target.acceptance.probability='numeric',
+                             initial.scaling.parameters='numeric',
+                             weight.to.empiric.covariance='numeric',
+                             initial.covariance.mat='matrix',
+                             n.iter.until.use.empiric.covariance='numeric'
+         ))
+
+#'@export
+create.metropolis.control <- function(var.names,
+                                      simulation.function,
+                                      log.prior.distribution,
+                                      log.likelihood,
+                                      proposal.sds,
+                                      thin=length(var.names),
+                                      use.adaptive.scaling=F,
+                                      target.acceptance.probability=0.234)
+{
+    proposal.sds = check.variable.names(proposal.sds,
+                                        desired.names=var.names,
+                                        arg.name.for.error='proposal.sds')
+
+    create.adaptive.blockwise.metropolis.control(var.names=var.names,
+                                                 simulation.function=simulation.function,
+                                                 log.prior.distribution=log.prior.distribution,
+                                                 log.likelihood=log.likelihood,
+                                                 initial.covariance.mat=diag(proposal.sds^2),
+                                                 var.blocks=as.list(var.names),
+                                                 thin=thin,
+                                                 use.adaptive.scaling=use.adaptive.scaling,
+                                                 target.acceptance.probability=target.acceptance.probability,
+                                                 initial.scaling.parameters=rep(1,length(var.names)),
+                                                 n.iter.until.use.empiric.covariance=Inf)
+}
+
+#'@export
+create.adaptive.blockwise.metropolis.control <- function(var.names,
+                                                         simulation.function,
+                                                         log.prior.distribution,
+                                                         log.likelihood,
+                                                         initial.covariance.mat,
+                                                         var.blocks=list(var.names),
+                                                         thin=length(var.blocks),
+                                                         use.adaptive.scaling=T,
+                                                         target.acceptance.probability=0.234,
+                                                         initial.scaling.parameters=2.38^2/sapply(var.blocks, length),
+                                                         weight.to.empiric.covariance=1,
+                                                         n.iter.until.use.empiric.covariance=max(20,2*length(var.names)))
+{
+    # Check initial covariance matrix
+    initial.covariance.mat = check.cov.mat.names(initial.covariance.mat,
+                                                 desired.names=var.names,
+                                                 arg.name.for.error='initial.covariance.mat')
+
+    # Check weight to empiric covariance
+    if (class(weight.to.empiric.covariance) != 'numeric' ||
+        length(weight.to.empiric.covariance) != 1 ||
+        weight.to.empiric.covariance < 0 || weight.to.empiric.covariance > 1)
+        stop("'weight.to.empiric.covariance' must be a scalar between 0 and 1")
+
+    # Check that var.blocks is valid
+    if (class(var.blocks) != 'list' ||
+        length(var.blocks) == 0 ||
+        any(sapply(var.blocks, class) != 'character'))
+        stop("'var.blocks' must be a non-empty list, whose elements are character vectors")
+
+    elements.of.var.blocks = unique(unlist(var.blocks))
+    invalid.elements.of.var.blocks = sapply(elements.of.var.blocks, function(name){all(name != var.names)})
+    if (any(invalid.elements.of.var.blocks))
+        stop(paste0("The following name",
+                    ifelse(sum(missing.from.blocks)==1, ' is', 's are'),
+                    " are present in 'var.blocks', but are not given in 'var.names':",
+                    paste0("'", elements.of.var.blocks[invalid.elements.of.var.blocks], "'", collapse=', ')))
+
+    missing.from.blocks = sapply(var.names, function(name){all(name != unlist(var.blocks))})
+    if (any(missing.from.blocks))
+        stop(paste0("The following variable",
+                    ifelse(sum(missing.from.blocks)==1, ' is', 's are'),
+                    " not included in any of the elements of 'var.blocks': ",
+                    paste0("'", var.names[missing.from.blocks], "'", collapse=', ')))
+
+    # Create the control
+    create.mcmcsim.control(class.name='adaptive.blockwise.metropolis.control',
+                           var.names=var.names,
+                           method='adaptive.blockwise.metropolis',
+                           simulation.function=simulation.function,
+                           log.prior.distribution=log.prior.distribution,
+                           log.likelihood=log.likelihood,
+                           thin=thin,
+                           n.blocks=length(var.blocks),
+                           var.blocks=var.blocks,
+                           use.adaptive.scaling=use.adaptive.scaling,
+                           target.acceptance.probability=target.acceptance.probability,
+                           initial.scaling.parameters=initial.scaling.parameters,
+                           weight.to.empiric.covariance=weight.to.empiric.covariance,
+                           initial.covariance.mat=initial.covariance.mat,
+                           n.iter.until.use.empiric.covariance=n.iter.until.use.empiric.covariance)
+}
+
+
+
+
+#'@export
+run.adaptive.blockwise.metropolis.chain <- function(control,
+                                                    start.values,
+                                                    n.iter,
+                                                    start.empiric.covariance.mat=diag(rep(0, control@n.var)),
+                                                    start.empiric.covariance.n.iter=0,
+                                                    start.mean.parameters=rep(0, control@n.var),
+                                                    start.log.scaling.parameters=log(control@initial.scaling.parameters),
+                                                    update.frequency=floor(n.iter/10),
+                                                    save.to.file=NULL,
+                                                    save.frequency=200,
+                                                    ...)
+{
+    ##-- Check starting values --##
+    start.values = check.variable.names(start.values,
+                                        desired.names=control@var.names,
+                                        arg.name.for.error='start.values')
+    start.empiric.covariance.mat = check.cov.mat.names(start.empiric.covariance.mat,
+                                                       desired.names=control@var.names,
+                                                       arg.name.for.error='start.empiric.covariance.mat')
+    start.mean.parameters = check.variable.names(start.mean.parameters,
+                                                 desired.names=control@var.names,
+                                                 arg.name.for.error='start.mean.parameters')
+    if (all(class(start.log.scaling.parameters) != 'numeric') ||
+        length(start.log.scaling.parameters) != control@n.blocks)
+        stop(paste0("'start.log.scaling.parameters' must be a numeric vector of length ", control@n.blocks))
+
+
+    ##-- Initial State --##
+    if (!is.na(update.frequency))
+        print("- Running initial simulation...")
+
+    current.parameters = start.values
+    current.log.prior = control@log.prior.distribution(current.parameters)
+    current.sim = control@simulation.function(current.parameters, ...)
+    current.log.likelihood = control@log.likelihood(current.sim)
+    current.sim.index = NA
+
+    if (current.log.likelihood==-Inf)
+        print("WARNING: The log likelihood at the starting state evaluates to -Inf. Consider starting in a higher-likelihood region")
+
+    ##-- Set up for Chain --##
+    log.rands = log(runif(n.iter, 0, 1))
+
+    samples = NULL
+    simulations = list()
+    simulation.indices = integer()
+    log.priors = log.likelihoods = numeric()
+    n.accepted = integer()
+    n.accepted.for.chunk = 0
+
+    ##-- Set up quantities for crunching --##
+    zero.matrix = matrix(0, nrow=control@n.var, ncol=control@n.var, dimnames=list(control@var.names, control@var.names))
+    one.matrix = matrix(1, nrow=control@n.var, ncol=control@n.var, dimnames=list(control@var.names, control@var.names))
+    identity.d = diag(rep(1, control@n.var))
+
+    ##-- Set up for Empiric Covariance --##
+    i.emp.cov = start.empiric.covariance.n.iter
+    current.mean.parameters = start.mean.parameters
+    empiric.covariance.mat = start.empiric.covariance.mat
+
+    ##-- Set up scaling parameters --##
+    log.scaling.parameters = start.log.scaling.parameters
+
+
+    ##-- Run the Chain --##
+    for (iter in 1:n.iter)
+    {
+        #-- Get the block --#
+        block = 1 + (iter-1) %% control@n.blocks
+        block.vars = control@var.blocks[[block]]
+
+        #-- Print an update --#
+        if (!is.na(update.frequency) && (update.frequency==1 || (iter %% update.frequency)==1))
+            print(paste0("- Iteration ", iter, " of ", n.iter, " (", round(100*iter/n.iter), "%)",
+                         ifelse(iter==1, '',
+                                paste0(". ", n.accepted.for.chunk+sum(n.accepted),
+                                       " accepted so far (",
+                                       round(100*(n.accepted.for.chunk+sum(n.accepted))/(iter-1)), '%)')
+                         )))
+
+        #-- Select the empiric covariance matrix if enough iterations have elapsed, or the initial matrix if not --#
+        cov.mat = zero.matrix
+
+        if (i.emp.cov < control@n.iter.until.use.empiric.covariance &&
+            ((sum(n.accepted)+n.accepted.for.chunk)<2 || all(start.empiric.covariance.mat == 0)))
+            cov.mat[block.vars,block.vars] = control@initial.covariance.mat[block.vars,block.vars]
+        else
+            cov.mat[block.vars,block.vars] = (exp(log.scaling.parameters[block]) *
+                (control@weight.to.empiric.covariance * empiric.covariance.mat +
+                (1-control@weight.to.empiric.covariance) * identity.d))[block.vars,block.vars]
+
+        #-- Propose new parameters --#
+        proposed.parameters = rmvnorm(1, mean=current.parameters, sigma=cov.mat)[1,]
+        proposed.log.prior = control@log.prior.distribution(proposed.parameters)
+
+        #-- Run the Sim and Evaluate Likelihood --#
+        proposed.sim = control@simulation.function(proposed.parameters, ...)
+        proposed.sim.index = NA
+        proposed.log.likelihood = control@log.likelihood(proposed.sim)
+
+        #-- Compute the Acceptance Ratio --#
+        if (proposed.log.likelihood==-Inf && current.log.likelihood==-Inf)
+            log.acceptance.ratio = proposed.log.prior - current.log.prior
+        else
+            log.acceptance.ratio = proposed.log.likelihood + proposed.log.prior -
+                current.log.likelihood - current.log.prior
+
+        acceptance.probability = exp(min(0,log.acceptance.ratio))
+
+
+# Temp debugging
+print(paste0("Current params  = [",
+             paste0(paste0(control@var.names, '=', round(current.parameters,4)), collapse=", "),
+             "]"))
+print(paste0("Proposed params = [",
+             paste0(paste0(control@var.names, '=', round(proposed.parameters,4)), collapse=", "),
+             "]"))
+print(paste0("Current log likelihood = ",
+             round(current.log.likelihood, 4),
+             ", proposed log likelihood = ",
+             round(proposed.log.likelihood, 4)))
+print(paste0("r = ",
+             round(exp(log.acceptance.ratio), 3),
+             " --> ",
+             ifelse(log.acceptance.ratio > log.rands[iter], "ACCEPT", "REJECT")))
+
+        #-- Accept or Reject --#
+        if (log.acceptance.ratio > log.rands[iter]) #Accept
+        {
+            # Update count
+            n.accepted.for.chunk = n.accepted.for.chunk + 1
+
+            # Update current state
+            current.sim = proposed.sim
+            current.sim.index = proposed.sim.index
+            current.parameters = proposed.parameters
+            current.log.prior = proposed.log.prior
+            current.log.likelihood = proposed.log.likelihood
+        }
+
+        #-- Update empiric covariance matrix and scaling parameter --#
+        i.emp.cov = i.emp.cov + 1
+
+        empiric.covariance.mat = empiric.covariance.mat +
+            ((current.parameters - current.mean.parameters) %*% t(current.parameters - current.mean.parameters) - empiric.covariance.mat) / i.emp.cov
+        #make sure we update the mean AFTER updating the covariance matrix
+        current.mean.parameters = current.mean.parameters +
+            (current.parameters - current.mean.parameters) / i.emp.cov
+        if (control@use.adaptive.scaling)
+            log.scaling.parameters[block] = log.scaling.parameters[block] +
+                (acceptance.probability - control@target.acceptance.probability) / ceiling(i.emp.cov/control@n.blocks)
+
+if (i.emp.cov < control@n.iter.until.use.empiric.covariance &&
+    ((sum(n.accepted)+n.accepted.for.chunk)<2 || all(start.empiric.covariance.mat == 0)))
+{
+    print("initial covar mat:")
+    print(round(control@initial.covariance.mat,7))
+}
+
+print(paste0("lambda = ", exp(log.scaling.parameters) ))
+print(paste0("lambda * empiric covar mat:"))
+print(round(exp(log.scaling.parameters[block]) * empiric.covariance.mat,7))
+
+        #-- Store Current State if Warranted --#
+        if ((iter %% control@thin)==0) #Store the current state
+        {
+            if (is.na(current.sim.index)) #store the simulation, as we have not before
+            {
+                simulations = c(simulations, list(current.sim))
+                current.sim.index = length(simulations)
+            }
+
+            simulation.indices = c(simulation.indices, current.sim.index)
+            samples = rbind(samples, current.parameters)
+            log.likelihoods = c(log.likelihoods, current.log.likelihood)
+            log.priors = c(log.prior, current.log.prior)
+
+            n.accepted = c(n.accepted, n.accepted.for.chunk)
+            n.accepted.for.chunk = 0
+        }
+
+
+        #-- Save if Warranted --#
+        if (!is.null(save.to.file) && (iter%%save.frequency)==0)
+        {
+            if (!is.na(update.frequency))
+                print(paste0("Saving first ", iter, " to file"))
+            mcmc = package.mcmcsim.single.chain(control=control,
+                                                samples=samples,
+                                                simulations=simulations,
+                                                simulation.indices=simulation.indices,
+                                                log.likelihoods=log.likelihoods,
+                                                log.priors=log.priors,
+                                                n.iterations.run=iter,
+                                                n.accepted=n.accepted)
+            save(mcmc, file=save.to.file)
+        }
+    }
+
+    ##-- Package it Up --##
+    mcmc = package.mcmcsim.single.chain(control=control,
+                                        samples=samples,
+                                        simulations=simulations,
+                                        simulation.indices=simulation.indices,
+                                        log.likelihoods=log.likelihoods,
+                                        log.priors=log.priors,
+                                        n.iterations.run=iter,
+                                        n.accepted=n.accepted)
+
+    ##-- Save if we are writing out --##
+    if (!is.null(save.to.file))
+    {
+        if (!is.na(update.frequency))
+            print("Done with MCMC. Saving to file")
+        save(mcmc, file=save.to.file)
+    }
+
+    ##-- Return --##
+    mcmc
+}

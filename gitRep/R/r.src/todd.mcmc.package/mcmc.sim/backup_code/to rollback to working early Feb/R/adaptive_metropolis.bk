@@ -1,0 +1,225 @@
+
+#'@export
+create.adaptive.metropolis.control <- function(var.names,
+                                               simulation.function,
+                                               log.prior.distribution,
+                                               log.likelihood,
+                                               initial.covariance.mat=NULL,
+                                               thin=length(var.names),
+                                               s.d=2.4^2/length(var.names),
+                                               epsilon=0,
+                                               n.iter.until.use.empiric.covariance=max(20,2*length(var.names)),
+                                               construct.initial.covariance.from.sds=NULL)
+{
+    #check initial covariance matrix
+    if (!is.null(initial.covariance.mat))
+    {
+        if (is.null(dim(initial.covariance.mat)) ||
+            length(dim(initial.covariance.mat))!=2 ||
+            dim(initial.covariance.mat)[1]!=length(var.names) ||
+            dim(initial.covariance.mat)[2]!=length(var.names))
+            stop(paste0("'initial.covariance.mat' must be a ", length(var.names), "x", length(var.names), " covariance matrix"))
+    }
+    else if (!is.null(construct.initial.covariance.from.sds))
+    {
+        if (length(construct.initial.covariance.from.sds)!=length(var.names))
+            stop(paste0("'construct.initial.covariance.from.sds' must be the same length as 'var.names' (", length(var.names), ")"))
+        initial.covariance.mat = diag(construct.initial.covariance.from.sds^2)
+    }
+    else
+        stop("You must either specify 'initial.covariance.mat' or 'construct.initial.covariance.from.sds")
+
+    create.mcmcsim.control(var.names=var.names,
+                           method='adaptive.metropolis',
+                           simulation.function=simulation.function,
+                           log.prior.distribution=log.prior.distribution,
+                           log.likelihood=log.likelihood,
+                           thin=thin,
+                           method.controls=list(s.d=s.d,
+                                                epsilon=epsilon,
+                                                initial.covariance.mat=initial.covariance.mat,
+                                                n.iter.until.use.empiric.covariance=n.iter.until.use.empiric.covariance)
+                           )
+}
+
+construct.am.initial.covariance.from.sampling <- function(n.sim,
+                                                          starting.values,
+                                                          simulation.function,
+                                                          log.prior.distribution,
+                                                          log.likelihood)
+{
+    stop("construct.am.initial.covariance.from.sampling is not yet implemented")
+}
+
+#'@export
+run.adaptive.metropolis.chain <- function(control,
+                                          starting.values,
+                                          n.iter,
+                                          starting.empiric.covariance.mat=0,
+                                          starting.covariance.n.iter=0,
+                                          starting.mean.parameters=rep(0,control@n.var),
+                                          update.frequency=floor(n.iter/10),
+                                          save.to.file=NULL,
+                                          save.frequency=200,
+                                          ...)
+{
+    ##-- Check starting values --##
+print('need to check starting params')
+    current.parameters = starting.values
+
+    ##-- Initial State --##
+    if (!is.na(update.frequency))
+        print("- Running initial simulation...")
+
+    current.log.prior = control@log.prior.distribution(current.parameters)
+    current.sim = control@simulation.function(current.parameters, ...)
+    current.log.likelihood = control@log.likelihood(current.sim)
+    current.sim.index = NA
+
+    if (current.log.likelihood==-Inf)
+        print("WARNING: The log likelihood at the starting state evaluates to -Inf. Consider starting in a higher-likelihood region")
+
+    ##-- Set up for Chain --##
+    log.rands = log(runif(n.iter, 0, 1))
+
+    samples = NULL
+    simulations = list()
+    simulation.indices = integer()
+    log.priors = log.likelihoods = numeric()
+    n.accepted = 0
+
+    ##-- Set up for Empiric Covariance --##
+    n.for.emp.cov = starting.covariance.n.iter
+    current.mean.parameters = starting.mean.parameters
+    identity.d = diag(rep(1, control@n.var))
+    empiric.covariance.mat = starting.empiric.covariance.mat
+
+    ##-- Run the Chain --##
+    for (iter in 1:n.iter)
+    {
+        if (!is.na(update.frequency) && (update.frequency==1 || (iter %% update.frequency)==1))
+            print(paste0("- Iteration ", iter, " of ", n.iter, " (", round(100*iter/n.iter), "%)",
+                         ifelse(iter==1, '',
+                                paste0(". Acceptance ratio so far = ", round(100*n.accepted/(iter-1)), '%')
+                         )))
+
+        #Select the empiric covariance matrix if enough iterations have elapsed, or the initial matrix if not
+        if (n.for.emp.cov < control@method.controls$n.iter.until.use.empiric.covariance &&
+            (n.accepted>1 || starting.empiric.covariance.mat != 0))
+            cov.mat = control@method.controls$initial.covariance.mat
+        else
+            cov.mat = empiric.covariance.mat
+
+        #Propose new parameters
+        proposed.parameters = rmvnorm(1, mean=current.parameters, sigma=cov.mat)[1,]
+        proposed.log.prior = control@log.prior.distribution(proposed.parameters)
+
+        #-- Run the Sim and Evaluate Likelihood --#
+        proposed.sim = control@simulation.function(proposed.parameters, ...)
+        proposed.sim.index = NA
+        proposed.log.likelihood = control@log.likelihood(proposed.sim)
+
+        #-- Compute the Acceptance Ratio --#
+        if (proposed.log.likelihood==-Inf && current.log.likelihood==-Inf)
+            log.acceptance.ratio = proposed.log.prior - current.log.prior
+        else
+            log.acceptance.ratio = proposed.log.likelihood + proposed.log.prior -
+                current.log.likelihood - current.log.prior
+
+# Temp debugging
+print(paste0("Current params  = [",
+             paste0(paste0(control@var.names, '=', round(current.parameters,4)), collapse=", "),
+             "]"))
+print(paste0("Proposed params = [",
+             paste0(paste0(control@var.names, '=', round(proposed.parameters,4)), collapse=", "),
+             "]"))
+print(paste0("Current log likelihood = ",
+             round(current.log.likelihood, 4),
+             ", proposed log likelihood = ",
+             round(proposed.log.likelihood, 4)))
+print(paste0("r = ",
+             round(exp(log.acceptance.ratio), 3),
+             " --> ",
+             ifelse(log.acceptance.ratio > log.rands[iter], "ACCEPT", "REJECT")))
+
+        #-- Accept or Reject --#
+        if (log.acceptance.ratio > log.rands[iter]) #Accept
+        {
+            # Update count
+            n.accepted = n.accepted + 1
+
+            # Update current state
+            current.sim = proposed.sim
+            current.sim.index = proposed.sim.index
+            current.parameters = proposed.parameters
+            current.log.prior = proposed.log.prior
+            current.log.likelihood = proposed.log.likelihood
+        }
+
+        #-- Update empiric covariance matrix --#
+
+        n.for.emp.cov = n.for.emp.cov + 1
+        prev.mean.parameters = current.mean.parameters
+        current.mean.parameters = current.mean.parameters * (n.for.emp.cov-1) / n.for.emp.cov + current.parameters / n.for.emp.cov
+
+        empiric.covariance.mat =
+            (n.for.emp.cov-1)/n.for.emp.cov * empiric.covariance.mat + control@method.controls$s.d/n.for.emp.cov *
+            (n.for.emp.cov * prev.mean.parameters %*% t(prev.mean.parameters) -
+                 (n.for.emp.cov+1) * current.mean.parameters %*% t(current.mean.parameters) +
+                 current.parameters %*% t(current.parameters) +
+                 control@method.controls$epsilon * identity.d)
+
+
+        #-- Store Current State if Warranted --#
+        if ((iter %% control@thin)==0) #Store the current state
+        {
+            if (is.na(current.sim.index)) #store the simulation, as we have not before
+            {
+                simulations = c(simulations, list(current.sim))
+                current.sim.index = length(simulations)
+            }
+
+            simulation.indices = c(simulation.indices, current.sim.index)
+            samples = rbind(samples, current.parameters)
+            log.likelihoods = c(log.likelihoods, current.log.likelihood)
+            log.priors = c(log.prior, current.log.prior)
+        }
+
+        #-- Save if Warranted --#
+        if (!is.null(save.to.file) && (iter%%save.frequency)==0)
+        {
+            if (!is.na(update.frequency))
+                print(paste0("Saving first ", iter, " to file"))
+            mcmc = package.mcmcsim.single.chain(control=control,
+                                                samples=samples,
+                                                simulations=simulations,
+                                                simulation.indices=simulation.indices,
+                                                log.likelihoods=log.likelihoods,
+                                                log.priors=log.priors,
+                                                n.iterations.run=iter,
+                                                n.accepted=n.accepted)
+            save(mcmc, file=save.to.file)
+        }
+    }
+
+    ##-- Package it Up --##
+    mcmc = package.mcmcsim.single.chain(control=control,
+                                        samples=samples,
+                                        simulations=simulations,
+                                        simulation.indices=simulation.indices,
+                                        log.likelihoods=log.likelihoods,
+                                        log.priors=log.priors,
+                                        n.iterations.run=iter,
+                                        n.accepted=n.accepted)
+
+    ##-- Save if we are writing out --##
+    if (!is.null(save.to.file))
+    {
+        if (!is.na(update.frequency))
+            print("Done with MCMC. Saving to file")
+        save(mcmc, file=save.to.file)
+    }
+
+    ##-- Return --##
+    mcmc
+}
